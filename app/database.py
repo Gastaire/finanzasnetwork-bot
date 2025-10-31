@@ -1,22 +1,16 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from .config import settings
-import os # <-- Importamos OS para leer variables de entorno
+from .config import settings # <-- Importamos la instancia centralizada
 
-# --- ROMPEMOS EL CICLO AQUÍ ---
-# Ya no importamos 'settings'. Leemos la URL directamente
-# (Asegúrate de tener esta variable en tu entorno o pon la URL aquí)
-# EJ: SQLALCHEMY_DATABASE_URL = "sqlite:///./sql_app.db"
-# EJ: SQLALCHEMY_DATABASE_URL = "postgresql://user:password@localhost/dbname"
-
-SQLALCHEMY_DATABASE_URL = os.environ.get(
-    "DATABASE_URL", 
-    "sqlite:///./sql_app.db" # <-- Valor por defecto si no la encuentra
-)
+# --- USAMOS LA CONFIGURACIÓN CENTRAL ---
+# La URL de la base de datos ahora viene de la instancia 'settings'
+# que ya ha validado que la variable de entorno exista.
+SQLALCHEMY_DATABASE_URL = settings.DATABASE_URL
 
 # Configuración del motor
 engine_args = {}
+# Seguimos necesitando esta lógica específica para SQLite
 if SQLALCHEMY_DATABASE_URL.startswith("sqlite"):
     engine_args["connect_args"] = {"check_same_thread": False}
 

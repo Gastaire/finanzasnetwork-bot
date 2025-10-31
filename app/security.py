@@ -1,4 +1,3 @@
-import os
 import base64
 from datetime import datetime, timedelta, timezone
 from passlib.context import CryptContext
@@ -10,6 +9,9 @@ from sqlalchemy.orm import Session
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+# --- ¡CAMBIO CLAVE! ---
+# Importamos la instancia 'settings' desde config.
 from .config import settings
 
 # Importamos models y schemas, PERO NO 'crud' (para evitar importación circular)
@@ -20,12 +22,11 @@ from .database import get_db
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Esquema de autenticación (le dice a FastAPI cómo esperar el token)
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/login")
+# El tokenUrl ahora usa el prefijo completo definido en main.py
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
-# Secretos del .env
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM")
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30))
+# Las variables ahora se leen desde la instancia 'settings'
+# No es necesario definir SECRET_KEY, ALGORITHM, etc. aquí.
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -41,17 +42,17 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password_to_hash)
 
 # --- LÓGICA DE ENCRIPTACIÓN DE DATOS ---
-# Cargamos la clave maestra del .env
-MASTER_KEY = os.getenv("MASTER_ENCRYPTION_KEY")
+# Leemos la clave maestra desde la instancia 'settings'
+MASTER_KEY = settings.MASTER_ENCRYPTION_KEY
 if not MASTER_KEY:
-    raise ValueError("MASTER_ENCRYPTION_KEY no está configurada en el .env")
+    # Esta validación es redundante si Settings la marca como requerida, pero es una buena práctica de seguridad
+    raise ValueError("MASTER_ENCRYPTION_KEY no está configurada.")
 
 try:
-    # La clave en el .env (la nueva que te di) YA ESTÁ en el formato correcto.
+    # La clave en el .env YA ESTÁ en el formato correcto (URL-safe base64).
     # Solo necesitamos codificarla a bytes para que Fernet la acepte.
     key_bytes = MASTER_KEY.encode('utf-8')
 
-    # Fernet espera un string base64 de 44 bytes (que son 32 bytes de datos)
     if len(key_bytes) != 44:
         raise ValueError("La clave Fernet debe tener 44 caracteres.")
 
@@ -59,7 +60,6 @@ try:
     fernet = Fernet(key_bytes)
 
 except Exception as e:
-    # Si la clave es inválida (ej. base64 corrupto), esto fallará
     raise ValueError(f"MASTER_ENCRYPTION_KEY es inválida o está corrupta: {e}")
 
 def encrypt_data(data: str) -> str:
@@ -83,16 +83,16 @@ def decrypt_data(encrypted_data: str) -> str:
 # --- LÓGICA DE TOKENS JWT ---
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    # ^^^^ ¡ARREGLADO! Se usa 'timedelta | None' en lugar de 'Optional[timedelta]'
-    
     to_encode = data.copy()
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        # Usamos el valor desde 'settings'
+        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    # Usamos los valores desde 'settings'
+    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
 async def get_current_user(
@@ -100,7 +100,6 @@ async def get_current_user(
     db: Session = Depends(get_db)
 ) -> models.User:
     
-    # --- ¡ARREGLADO! Importamos 'crud' aquí dentro para evitar el bucle ---
     from . import crud
     
     credentials_exception = HTTPException(
@@ -110,7 +109,8 @@ async def get_current_user(
     )
     
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        # Usamos los valores desde 'settings'
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email: EmailStr = payload.get("sub")
         if email is None:
             raise credentials_exception

@@ -1,7 +1,6 @@
 # app/config.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from .config import settings
 import os
 
 # Determina la ruta al archivo .env

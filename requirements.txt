@@ -1,0 +1,15 @@
+fastapi[all]
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic[email]
+python-dotenv
+passlib[bcrypt]
+python-jose[cryptography]
+bcrypt==4.3.0
+cryptography
+pandas
+pandas-ta
+yfinance
+numpy
+pydantic-settings

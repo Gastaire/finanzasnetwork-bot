@@ -1,0 +1,27 @@
+# Entorno virtual
+venv/
+/venv/
+*.venv
+env/
+/env/
+
+# Archivos de entorno
+.env
+.env.*
+!.env.example
+
+# Cache de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Cache de Pydantic y otros
+.pydantic_settings_cache
+
+# Cache de VSCode (opcional)
+.vscode/
+
+# Cache de SQLite (si lo usas)
+*.db
+*.sqlite3

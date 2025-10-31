@@ -1,34 +1,27 @@
 import pandas as pd
-import pandas_ta as ta
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
-# <<< 1. IMPORTS DE DEPENDENCIAS >>>
+# --- 1. IMPORTACIONES ACTUALIZADAS ---
 from sqlalchemy.orm import Session
-from .database import get_db             # Para la sesión de BBDD
-from .models import KLine, User           # Para consultar KLines y tipo de usuario
-from .security import get_current_active_user # <--- ¡CORRECCIÓN! Se importa desde 'security'
+from .database import get_db
+from .models import KLine, User
+from .security import get_current_active_user
+# ¡Importamos las estrategias desde nuestro motor de trading!
+from .trading_engine import STRATEGY_REGISTRY, BaseStrategy
 
-# --- Modelos Pydantic (Sin cambios) ---
+# --- 2. MODELOS PYDANTIC FLEXIBLES ---
 
 class BacktestRequest(BaseModel):
     symbol: str = Field(..., min_length=1)
     interval: str = Field(...)
-    rsi_length: int = Field(14, ge=2, le=100)
-    rsi_buy: float = Field(30.0, ge=0, le=100)
-    rsi_sell: float = Field(70.0, ge=0, le=100)
+    strategy_name: str = Field(..., description="Nombre de la estrategia a usar (ej. 'RSI', 'MACD')")
+    strategy_params: Dict[str, Any] = Field(default_factory=dict, description="Parámetros para la estrategia")
     initial_capital: float = Field(1000.0, gt=0)
     position_size: float = Field(1.0, gt=0, le=1)
-    
-    @field_validator('rsi_sell')
-    @classmethod
-    def validate_rsi_levels(cls, v, info):
-        if 'rsi_buy' in info.data and v <= info.data['rsi_buy']:
-            raise ValueError('rsi_sell debe ser mayor que rsi_buy')
-        return v
 
 class Trade(BaseModel):
     entry_time: str
@@ -38,11 +31,9 @@ class Trade(BaseModel):
     profit: float
     profit_pct: float
     shares: float
-    
-    class Config:
-        json_encoders = { datetime: lambda v: v.isoformat() }
 
 class BacktestResult(BaseModel):
+    strategy_name: str # <-- Añadido para claridad
     symbol: str
     interval: str
     initial_capital: float
@@ -151,60 +142,51 @@ def calculate_metrics(trades: List[Trade], initial_capital: float,
 router = APIRouter()
 
 
-# --- <<< 3. ENDPOINT ACTUALIZADO Y SECURIZADO >>> ---
+# --- 3. ENDPOINT DE BACKTEST REFACTORIZADO ---
 @router.post("/backtest", response_model=BacktestResult)
 async def run_backtest(
     request: BacktestRequest,
-    db: Session = Depends(get_db), # Inyección de BBDD
-    current_user: User = Depends(get_current_active_user) # Inyección de Usuario
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
 ):
     """
-    Ejecuta un backtest de estrategia de trading basado en RSI.
-    Este endpoint está protegido y requiere autenticación.
+    Ejecuta un backtest para una estrategia de trading específica.
     """
     try:
-        # 1. Cargar datos (en el threadpool)
-        df = await run_in_threadpool(
-            load_data_kline, 
-            symbol=request.symbol, 
-            interval=request.interval,
-            db=db  # Pasar la sesión de BBDD
-        )
+        # 1. Seleccionar la estrategia dinámicamente
+        StrategyClass = STRATEGY_REGISTRY.get(request.strategy_name)
+        if not StrategyClass:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Estrategia '{request.strategy_name}' no encontrada.")
         
+        # Instanciar con los parámetros proporcionados
+        strategy: BaseStrategy = StrategyClass(**request.strategy_params)
+
+        # 2. Cargar datos (sin cambios)
+        df = await run_in_threadpool(load_data_kline, symbol=request.symbol, interval=request.interval, db=db)
         if df.empty:
-            raise HTTPException(
-                status_code=404, 
-                detail="No se encontraron datos para el símbolo y el intervalo."
-            )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No se encontraron datos para el símbolo y el intervalo.")
         
-        # 2. Calcular RSI
-        rsi_column_name = f"RSI_{request.rsi_length}"
-        df[rsi_column_name] = ta.rsi(df['close'], length=request.rsi_length)
-        
-        # 3. Limpiar datos (eliminar NaN)
-        df.dropna(inplace=True)
-        
-        if df.empty or len(df) < request.rsi_length:
-            raise HTTPException(
-                status_code=400, 
-                detail="No hay suficientes datos para calcular indicadores."
-            )
-        
-        # 4. Inicializar variables de backtest
+        # 3. Generar señales usando la estrategia seleccionada
+        df = strategy.generate_signals(df)
+        df.dropna(inplace=True) # Limpiar NaNs generados por los indicadores
+
+        if df.empty:
+            raise HTTPException(status_code=400, detail="No hay suficientes datos para calcular indicadores con los parámetros dados.")
+
+        # 4. Bucle de backtesting genérico (basado en la columna 'signal')
         capital = request.initial_capital
         position = 0
         trades_list = []
         equity_curve = [capital]
         entry_price = 0.0
         entry_time = None
-        
-        # 5. Iterar sobre los datos
+
         for index, row in df.iterrows():
             current_price = row['close']
-            rsi_value = row[rsi_column_name]
-            
+            signal = row['signal']
+
             # Señal de COMPRA
-            if position == 0 and rsi_value < request.rsi_buy and capital > 0:
+            if position == 0 and signal == 'BUY' and capital > 0:
                 amount_to_invest = capital * request.position_size
                 position = amount_to_invest / current_price
                 capital -= amount_to_invest
@@ -212,22 +194,18 @@ async def run_backtest(
                 entry_time = index
                 
             # Señal de VENTA
-            elif position > 0 and rsi_value > request.rsi_sell:
+            elif position > 0 and signal == 'SELL':
                 exit_price = current_price
                 exit_time = index
-                
                 sale_value = position * exit_price
                 capital += sale_value
                 profit = sale_value - (position * entry_price)
                 profit_pct = ((exit_price - entry_price) / entry_price) * 100
                 
                 trades_list.append(Trade(
-                    entry_time=entry_time.isoformat(),
-                    exit_time=exit_time.isoformat(),
-                    entry_price=round(entry_price, 2),
-                    exit_price=round(exit_price, 2),
-                    profit=round(profit, 2),
-                    profit_pct=round(profit_pct, 2),
+                    entry_time=entry_time.isoformat(), exit_time=exit_time.isoformat(),
+                    entry_price=round(entry_price, 2), exit_price=round(exit_price, 2),
+                    profit=round(profit, 2), profit_pct=round(profit_pct, 2),
                     shares=round(position, 4)
                 ))
                 position = 0
@@ -235,37 +213,28 @@ async def run_backtest(
             current_equity = capital + (position * current_price)
             equity_curve.append(current_equity)
         
-        # 6. Cerrar posición abierta al final
+        # ... (Lógica final para cerrar posición y calcular métricas, sin cambios)
         if position > 0:
             final_price = df.iloc[-1]['close']
             sale_value = position * final_price
             capital += sale_value
             profit = sale_value - (position * entry_price)
             profit_pct = ((final_price - entry_price) / entry_price) * 100
-            
             trades_list.append(Trade(
-                entry_time=entry_time.isoformat(),
-                exit_time=df.index[-1].isoformat(),
-                entry_price=round(entry_price, 2),
-                exit_price=round(final_price, 2),
-                profit=round(profit, 2),
-                profit_pct=round(profit_pct, 2),
+                entry_time=entry_time.isoformat(), exit_time=df.index[-1].isoformat(),
+                entry_price=round(entry_price, 2), exit_price=round(final_price, 2),
+                profit=round(profit, 2), profit_pct=round(profit_pct, 2),
                 shares=round(position, 4)
             ))
         
-        # 7. Calcular métricas finales
         final_capital = capital
         total_profit = final_capital - request.initial_capital
         total_profit_pct = (total_profit / request.initial_capital) * 100
+        metrics = calculate_metrics(trades_list, request.initial_capital, equity_curve, request.interval)
         
-        metrics = calculate_metrics(
-            trades_list, 
-            request.initial_capital, 
-            equity_curve,
-            request.interval
-        )
-        
+        # Devolvemos el resultado, incluyendo el nombre de la estrategia
         return BacktestResult(
+            strategy_name=strategy.name, # <-- Añadido
             symbol=request.symbol,
             interval=request.interval,
             initial_capital=round(request.initial_capital, 2),
@@ -284,7 +253,7 @@ async def run_backtest(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Error de validación: {str(e)}")
     except KeyError as e:
-        raise HTTPException(status_code=500, detail=f"Error: Columna faltante - {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error: Columna faltante o parámetro de estrategia incorrecto - {str(e)}")
     except Exception as e:
         print(f"Error inesperado en backtest: {type(e).__name__}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")

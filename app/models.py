@@ -43,6 +43,7 @@ class ApiKey(Base):
     broker_name = Column(String, index=True, default="ppi") # Para el futuro (ej. IOL)
     
     # Guardamos los datos encriptados
+    encrypted_account_number = Column(String, nullable=False) # <--- ¡NUEVO CAMPO!
     encrypted_api_key = Column(String, nullable=False)
     encrypted_api_secret = Column(String, nullable=False)
     

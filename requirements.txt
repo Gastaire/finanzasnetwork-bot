@@ -13,3 +13,4 @@ pandas-ta
 yfinance
 numpy
 pydantic-settings
+ppi-client

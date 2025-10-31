@@ -30,6 +30,9 @@ class APIKeyBase(BaseModel):
     broker_name: str = "ppi"
 
 class APIKeyCreate(APIKeyBase):
+    # --- ¡CAMBIO AQUÍ! ---
+    # Ahora esperamos el número de cuenta desde el frontend
+    account_number: str
     api_key: str
     api_secret: str
 

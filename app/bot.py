@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from .database import get_db             # Para la sesión de BBDD
 from .models import KLine, User           # Para consultar KLines y tipo de usuario
-from .auth import get_current_active_user # Para securizar el endpoint
+from .security import get_current_active_user # <--- ¡CORRECCIÓN! Se importa desde 'security'
 
 # --- Modelos Pydantic (Sin cambios) ---
 

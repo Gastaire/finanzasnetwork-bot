@@ -16,7 +16,8 @@ def save_api_keys(
     Recibe y guarda (o actualiza) las claves de API de un usuario, encriptándolas.
     """
     
-    # Encriptamos los datos nuevos
+    # Encriptamos todos los datos nuevos, incluyendo el número de cuenta
+    encrypted_account_number = security.encrypt_data(key_data.account_number)
     encrypted_key = security.encrypt_data(key_data.api_key)
     encrypted_secret = security.encrypt_data(key_data.api_secret)
     
@@ -28,13 +29,15 @@ def save_api_keys(
     ).first()
 
     if db_key:
-        # Si existe, la actualizamos
+        # Si existe, la actualizamos con todos los campos
+        db_key.encrypted_account_number = encrypted_account_number
         db_key.encrypted_api_key = encrypted_key
         db_key.encrypted_api_secret = encrypted_secret
     else:
-        # Si no existe, creamos una nueva
+        # Si no existe, creamos una nueva con todos los campos
         db_key = models.ApiKey(
             broker_name=key_data.broker_name,
+            encrypted_account_number=encrypted_account_number,
             encrypted_api_key=encrypted_key,
             encrypted_api_secret=encrypted_secret,
             owner_id=current_user.id
